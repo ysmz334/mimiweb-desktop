@@ -34,8 +34,7 @@ src-tauri/piper/
 **/*.tauri-signing*
 
 # --- Editor directories and files ---
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 .DS_Store
 *.suo
