@@ -1,0 +1,364 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+
+  /* Light theme */
+  --bg: #f6f6f6;
+  --surface: #ffffff;
+  --surface-alt: #fafafa;
+  --border: #dddddd;
+  --border-light: #eeeeee;
+  --text: #0f0f0f;
+  --text-muted: #888888;
+  --accent: #0066cc;
+  --progress-track: #e8e8e8;
+
+  /* Semantic status colors (light) */
+  --danger: #cc0000;
+  --danger-fg: #ffffff;
+  --success: #0a8a0a;
+  --info: var(--accent);
+  --warning: #d97000;
+  --favorite: #f5a623;
+
+  /* Playback calendar heatmap */
+  --cal-empty: #ebedf0;
+  --cal-l1: #9be9a8;
+  --cal-l2: #40c463;
+  --cal-l3: #30a14e;
+  --cal-l4: #216e39;
+
+  color: var(--text);
+  background-color: var(--bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+[data-theme="dark"] {
+  --bg: #1e1e1e;
+  --surface: #2a2a2a;
+  --surface-alt: #242424;
+  --border: #444444;
+  --border-light: #383838;
+  --text: #e8e8e8;
+  --text-muted: #999999;
+  --accent: #4da6ff;
+  --progress-track: #3a3a3a;
+
+  /* Semantic status colors (dark) */
+  --danger: #ff6b6b;
+  --danger-fg: #1e1e1e;
+  --success: #4ade80;
+  --info: var(--accent);
+  --warning: #f59e0b;
+  --favorite: #ffc14d;
+
+  /* Playback calendar heatmap (dark) */
+  --cal-empty: #161b22;
+  --cal-l1: #0e4429;
+  --cal-l2: #006d32;
+  --cal-l3: #26a641;
+  --cal-l4: #39d353;
+}
+
+/* キーボード操作時のフォーカス可視化（アクセシビリティ） */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+.container {
+  margin: 0;
+  padding-top: 10vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: 0.75s;
+}
+
+.logo.tauri:hover {
+  filter: drop-shadow(0 0 2em #24c8db);
+}
+
+.row {
+  display: flex;
+  justify-content: center;
+}
+
+a {
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: inherit;
+}
+
+a:hover {
+  filter: brightness(1.2);
+}
+
+h1 {
+  text-align: center;
+}
+
+input,
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text);
+  background-color: var(--surface);
+  transition: border-color 0.25s;
+  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: #396cd8;
+}
+
+button:active {
+  border-color: #396cd8;
+  background-color: var(--border);
+}
+
+input,
+button {
+  outline: none;
+}
+
+#greet-input {
+  margin-right: 5px;
+}
+
+/* ─── 記事ビューワ HTML コンテンツ ──────────────────────────────────── */
+
+.viewer-html-content img {
+  max-width: 100%;
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* ─── TTS ハイライト ─────────────────────────────────────────────────── */
+/* <mark> の UA デフォルト color (MarkText) と ruby 継承色の両方を上書きし、
+   ダーク・ライト両テーマで黄背景上のテキストを統一する */
+
+mark[data-tts],
+[data-tts-ruby],
+[data-tts-ruby] * {
+  color: #111 !important;
+}
+
+/* 未合成セグメント: 控えめに dim してクリック不可を示す。
+   合成済み（読み上げ可能）部分を相対的に際立たせ、全文アンバーの圧迫感を避ける。 */
+[data-tts-unsynth] {
+  opacity: 0.45;
+  cursor: default !important;
+}
+[data-theme="dark"] [data-tts-unsynth] {
+  opacity: 0.4;
+}
+
+/* TTS スキップ対象（BBS メタ / 日時行）: 目立たなくしてクリック不可に見せる */
+.viewer-html-content [data-tts-skip] {
+  opacity: 0.35;
+  cursor: default !important;
+}
+
+/* ─── ビューワ ブロック番号 ─────────────────────────────────────────────── */
+/* 空 <span data-block-num="N"> の ::before で描画。
+   テキストノードを持たないため TreeWalker(SHOW_TEXT) に影響しない。 */
+
+.viewer-html-content [data-block-num]::before {
+  content: attr(data-block-num);
+  font-size: 9px;
+  vertical-align: super;
+  line-height: 0;
+  color: var(--text-muted);
+  user-select: none;
+  pointer-events: none;
+  margin-right: 1px;
+}
+
+/* ─── 合成中インジケーター ───────────────────────────────────────────── */
+
+@keyframes synth-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+/* ─── 抽出中スピナー ──────────────────────────────────────────────────── */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.inline-spinner {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+/* ─── ショートカットキーツールチップ ─────────────────────────────────── */
+
+.btn-with-hint {
+  position: relative;
+  display: inline-flex;
+}
+
+.kbd-hint {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.9);
+  color: #f0f0f0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 300;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease 0.35s, visibility 0.12s ease 0.35s;
+}
+
+.btn-with-hint:hover .kbd-hint {
+  opacity: 1;
+  visibility: visible;
+}
+
+[data-theme="dark"] .kbd-hint {
+  background: rgba(220, 220, 220, 0.93);
+  color: #111;
+}
+
+/* ─── 再生コントロール（トランスポート）ボタン ──────────────────────────── */
+/* ながら聞き用途では再生・シーク・記事送りが主役。当たり判定を 40px に広げ、
+   hover/active で「押せる場所」と手応えを明示する（透明アイコンの弱点を補う）。 */
+
+.transport-btn {
+  font-size: 17px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: none;
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  line-height: 1;
+  transition: background-color 0.12s ease, transform 0.08s ease;
+}
+
+.transport-btn:hover:not(:disabled) {
+  border: none;
+  background: var(--border-light);
+}
+
+.transport-btn:active:not(:disabled) {
+  border: none;
+  background: var(--border);
+  transform: scale(0.9);
+}
+
+.transport-btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* 中央メインボタン（再生／一時停止）: 円形・アクセント色で主役として強調 */
+.transport-main {
+  font-size: 20px;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: filter 0.12s ease, transform 0.08s ease;
+}
+
+.transport-main:hover:not(:disabled) {
+  border: none;
+  filter: brightness(1.12);
+}
+
+.transport-main:active:not(:disabled) {
+  border: none;
+  transform: scale(0.94);
+}
+
+.transport-main:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* 記事スキップチップ（次の記事へ）: 高さをアイコンボタンに揃えつつラベルで区別 */
+.transport-chip {
+  font-size: 12px;
+  height: 40px;
+  padding: 0 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+  box-shadow: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.transport-chip:hover:not(:disabled) {
+  background: var(--border-light);
+  border-color: var(--border);
+}
+
+.transport-chip:disabled {
+  opacity: 0.3;
+  cursor: default;
+}

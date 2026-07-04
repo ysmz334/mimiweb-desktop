@@ -1,0 +1,51 @@
+# --- Logs ---
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# --- Dependencies / build output ---
+node_modules
+dist
+dist-ssr
+*.local
+
+# Rust / Tauri build artifacts
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# --- Bundled runtime engines (downloaded at runtime, must NOT be committed) ---
+# VOICEVOX engine is auto-downloaded on first launch (~1.7GB) — never publish it.
+src-tauri/binaries/
+# Piper TTS is downloaded from the Settings tab.
+src-tauri/piper/
+
+# --- Code signing / secrets (safety net; none currently in repo) ---
+*.pem
+*.key
+*.pfx
+*.p12
+.env
+.env.*
+.tauri/
+**/*.tauri-signing*
+
+# --- Editor directories and files ---
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- Excluded from public repository (internal / WIP, kept locally) ---
+.claude/
+.kiro/
+CLAUDE.md
+docs/mobile-app/

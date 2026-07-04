@@ -1,0 +1,19 @@
+# Normalize line endings on checkin; let Git decide on checkout.
+* text=auto
+
+# Scripts that must keep platform-native endings
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sh  text eol=lf
+
+# Binary assets — never normalize
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.svg   text
+*.7z    binary
+*.zip   binary
+*.onnx  binary
+*.wav   binary
+*.mp3   binary
