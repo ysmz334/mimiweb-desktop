@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "build:installer": "npm run tauri build",
     "build:portable": "pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1 -BuildFirst",
+    "build:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/make-release.ps1 -BuildFirst",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

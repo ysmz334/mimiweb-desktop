@@ -59,6 +59,40 @@ dist/mimiweb-desktop-{version}-windows-x64.zip
 
 ---
 
+## GitHub Release の作成
+
+配布物（インストーラ・ポータブル ZIP・チェックサム）を一括生成します。
+
+```powershell
+npm run build:release
+```
+
+内部で `scripts/make-release.ps1 -BuildFirst` を呼び出し、`tauri build` から実行します。
+
+**出力先:** `release/`
+
+```
+release/
+├── mimiweb-desktop-{version}-windows-x64-setup.exe   (NSIS インストーラ)
+├── mimiweb-desktop-{version}-windows-x64.zip          (ポータブル版)
+└── SHA256SUMS.txt                                     (上記2ファイルの SHA256)
+```
+
+生成された3ファイルを [GitHub Releases](https://github.com/ysmz334/mimiweb-desktop/releases) にアップロードします。
+
+**リリース手順:**
+
+1. `src-tauri/tauri.conf.json` の `version` を更新（新バージョン時）
+2. `CHANGELOG.md` に変更点を追記
+3. `npm run build:release` で `release/` に配布物を生成
+4. `git tag v{version}` を作成して push（例: `git tag v0.1.0 && git push origin v0.1.0`）
+5. GitHub の Releases 画面で当該タグを選び、`release/` の3ファイルを添付して公開
+
+> ⚠️ リリースする実行ファイルは**必ず最新ソースからリビルド**してください。
+> 古いビルド成果物を配布すると、公開ソースと中身が一致しなくなります。
+
+---
+
 ## バージョン管理
 
 バージョンは `src-tauri/tauri.conf.json` の `version` フィールドで一元管理します。
