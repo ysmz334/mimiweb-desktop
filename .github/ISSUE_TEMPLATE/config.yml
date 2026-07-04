@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 質問・使い方の相談
+    url: https://github.com/ysmz334/mimiweb-desktop/discussions
+    about: 不具合・要望以外の質問は Discussions へどうぞ（Issues でも構いません）

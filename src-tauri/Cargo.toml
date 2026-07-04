@@ -1,6 +1,6 @@
 [package]
 name = "mimiweb-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Web記事読み上げデスクトップアプリ"
 authors = ["ysmz334"]
 edition = "2021"

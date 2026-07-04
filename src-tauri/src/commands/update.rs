@@ -1,7 +1,6 @@
 use serde::Serialize;
 
-// 公開後にGitHubリポジトリを設定してください (例: "yourname/mimiweb-desktop")
-const GITHUB_REPO: &str = "";
+const GITHUB_REPO: &str = "ysmz334/mimiweb-desktop";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

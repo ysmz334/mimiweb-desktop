@@ -1,0 +1,47 @@
+name: 不具合報告
+description: 動作しない・エラーが出る・表示がおかしい等の報告
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 何が起きましたか？
+      description: 実際に起きたことと、期待していた動作を教えてください。
+      placeholder: 例）記事の URL を登録したが、本文の抽出が「抽出中」のまま終わらない。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 再現手順
+      placeholder: |
+        1. アプリを起動する
+        2. ○○ のページの URL を登録する
+        3. ...
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: アプリのバージョン
+      description: 設定タブ →「アプリ情報」で確認できます。
+      placeholder: 例）0.1.1
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: 例）Windows 11 Home 24H2
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: ログファイル
+      description: |
+        `%APPDATA%\com.mimiweb.desktop\logs\` にある当日のログファイルを添付いただくと解決が早まります。
+        （このコメント欄にファイルをドラッグ＆ドロップすると添付できます）
+    validations:
+      required: false

@@ -1,0 +1,20 @@
+name: 機能要望
+description: こんな機能がほしい・こう改善してほしい
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 困っていること・実現したいこと
+      description: 機能の案そのものより「何に困っているか」を書いていただけると、より良い解決策を検討できます。
+      placeholder: 例）通勤中もスマホで聴きたいが、音声を持ち出す方法がない。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 解決策のアイデア（あれば）
+      placeholder: 例）合成済みの音声を MP3 ファイルとして書き出せるようにする。
+    validations:
+      required: false
