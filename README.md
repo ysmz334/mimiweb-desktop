@@ -1,5 +1,7 @@
 # mimiweb-desktop
 
+**日本語** | [English](./README.en.md)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Release](https://img.shields.io/github/v/release/ysmz334/mimiweb-desktop)](https://github.com/ysmz334/mimiweb-desktop/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/ysmz334/mimiweb-desktop/total)](https://github.com/ysmz334/mimiweb-desktop/releases)
