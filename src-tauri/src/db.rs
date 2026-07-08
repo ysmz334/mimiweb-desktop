@@ -2,6 +2,21 @@ use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
 pub const MIGRATION_SQL: &str = include_str!("../migrations/001_create_tables.sql");
 
+/// articles の source_type カラムを追加する（既存 DB 用・冪等）。
+pub async fn ensure_source_type_column(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let has_source_type: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM pragma_table_info('articles') WHERE name = 'source_type'",
+    )
+    .fetch_one(pool)
+    .await?;
+    if !has_source_type {
+        sqlx::query("ALTER TABLE articles ADD COLUMN source_type TEXT NOT NULL DEFAULT 'web'")
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 pub async fn setup_test_db() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -91,6 +106,76 @@ mod tests {
         .await
         .unwrap();
         assert!(still_has, "マイグレーション後も language カラムが存在すべき");
+    }
+
+    #[tokio::test]
+    async fn articles_has_source_type_column() {
+        let pool = setup_test_db().await;
+        let has_source_type: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM pragma_table_info('articles') WHERE name = 'source_type'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(has_source_type, "articles テーブルに source_type カラムが存在すべき");
+    }
+
+    #[tokio::test]
+    async fn articles_source_type_defaults_to_web() {
+        let pool = setup_test_db().await;
+        sqlx::query(
+            "INSERT INTO articles (url, status, registered_at) VALUES ('https://type-test.com', 'pending', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let source_type: String = sqlx::query_scalar(
+            "SELECT source_type FROM articles WHERE url = 'https://type-test.com'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(source_type, "web", "source_type のデフォルト値は 'web' であるべき");
+    }
+
+    #[tokio::test]
+    async fn source_type_migration_applies_to_existing_db_and_is_idempotent() {
+        // source_type カラムを持たない旧スキーマの DB を再現する
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE articles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                registered_at TEXT NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO articles (url, status, registered_at) VALUES ('https://old-db.com', 'ready', '2024-01-01T00:00:00Z')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // マイグレーションを2回適用しても冪等であること
+        ensure_source_type_column(&pool).await.unwrap();
+        ensure_source_type_column(&pool).await.unwrap();
+
+        // 既存の全記事が種別 'web' として読み出せること
+        let source_type: String =
+            sqlx::query_scalar("SELECT source_type FROM articles WHERE url = 'https://old-db.com'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(source_type, "web", "マイグレーション後、既存記事は種別 'web' として読めるべき");
     }
 
     #[tokio::test]

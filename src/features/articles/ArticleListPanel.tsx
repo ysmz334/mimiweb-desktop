@@ -3,7 +3,10 @@ import { Star, Play, X } from "lucide-react";
 import { registerArticle } from "@/lib/tauriCommands";
 import { useArticles } from "./useArticles";
 import { useAudioCache } from "./useAudioCache";
-import { Favicon } from "@/shared/Favicon";
+import { TextForm } from "./TextForm";
+import { SourceIcon } from "@/shared/SourceIcon";
+import { LangBadge } from "@/shared/LangBadge";
+import { FallbackBadge } from "@/shared/FallbackBadge";
 import { wordCloudBus } from "@/shared/wordCloudBus";
 import { markSelfCopied } from "@/features/clipboard/useClipboardMonitor";
 import type { Article, ArticleError, ArticleSearchTarget } from "@/shared/types";
@@ -92,9 +95,56 @@ function UrlForm({ onAdded }: { onAdded: (article: Article) => void }) {
 }
 
 function errorMessage(e: ArticleError): string {
-  if (e.kind === "duplicate_url") return "この URL はすでに登録済みです";
-  if (e.kind === "invalid_url") return "無効な URL です";
-  return `エラー: ${e.message}`;
+  switch (e.type) {
+    case "duplicate_url": return "この URL はすでに登録済みです";
+    case "invalid_url": return "無効な URL です";
+    case "empty_content": return "本文を入力してください";
+    case "not_found": return "記事が見つかりません";
+    case "not_text_article": return "テキスト記事のみ編集できます";
+    case "database_error": return `エラー: ${e.message}`;
+  }
+}
+
+// ─── 登録エリア（URL / テキスト切替） ─────────────────────────────────────
+
+function RegisterArea({ onAdded }: { onAdded: (article: Article) => void }) {
+  const [mode, setMode] = useState<"url" | "text">("url");
+
+  const segStyle = (active: boolean): React.CSSProperties => ({
+    padding: "3px 12px",
+    fontSize: 12,
+    border: "1px solid var(--border, #ccc)",
+    background: active ? "var(--accent)" : "transparent",
+    color: active ? "#fff" : "var(--text-muted)",
+    cursor: active ? "default" : "pointer",
+    boxShadow: "none",
+  });
+
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div style={{ display: "flex", marginBottom: 6 }}>
+        <button
+          type="button"
+          onClick={() => setMode("url")}
+          aria-pressed={mode === "url"}
+          aria-label="URLで登録"
+          style={{ ...segStyle(mode === "url"), borderRadius: "4px 0 0 4px" }}
+        >
+          URL
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("text")}
+          aria-pressed={mode === "text"}
+          aria-label="テキストで登録"
+          style={{ ...segStyle(mode === "text"), borderRadius: "0 4px 4px 0", borderLeft: "none" }}
+        >
+          テキスト
+        </button>
+      </div>
+      {mode === "url" ? <UrlForm onAdded={onAdded} /> : <TextForm onAdded={onAdded} />}
+    </div>
+  );
 }
 
 // ─── ステータスバッジ ─────────────────────────────────────────────────────
@@ -174,6 +224,7 @@ function ArticleRow({
   onDoubleClickPlay,
   onArticleContextMenu,
   onToggleFavorite,
+  piperInstalled = null,
 }: {
   article: Article;
   cache: CacheMeta | undefined;
@@ -184,6 +235,7 @@ function ArticleRow({
   onDoubleClickPlay?: (articleId: number) => void;
   onArticleContextMenu?: (url: string, x: number, y: number) => void;
   onToggleFavorite?: (id: number) => void;
+  piperInstalled?: boolean | null;
 }) {
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -210,6 +262,9 @@ function ArticleRow({
     <li
       onMouseLeave={() => wordCloudBus.cancelPending()}
       onContextMenu={(e) => {
+        // テキスト記事は URL 依存メニュー（ブラウザで開く / URLをコピー）を出さない。
+        // preventDefault しないことでグローバルのテキストコピーメニューは従来通り機能する
+        if (article.sourceType === "text") return;
         e.preventDefault();
         onArticleContextMenu?.(article.url, e.clientX, e.clientY);
       }}
@@ -230,10 +285,9 @@ function ArticleRow({
           <Star size={16} fill={article.isFavorite ? "currentColor" : "none"} />
         </button>
       )}
-      <Favicon url={article.url} size={14} />
-      {article.language === "en" && (
-        <span style={{ fontSize: 10, fontWeight: 700, color: "#0066cc", background: "#e8f0fe", borderRadius: 3, padding: "0 4px", flexShrink: 0 }}>EN</span>
-      )}
+      <SourceIcon url={article.url} sourceType={article.sourceType} size={14} />
+      <LangBadge language={article.language} />
+      <FallbackBadge language={article.language} piperInstalled={piperInstalled} />
       <div
         style={{ flex: 1, overflow: "hidden", cursor: onView ? "pointer" : "default" }}
         onClick={handleClick}
@@ -250,9 +304,11 @@ function ArticleRow({
             </span>
           )}
         </div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {article.url}
-        </div>
+        {article.sourceType !== "text" && (
+          <div style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {article.url}
+          </div>
+        )}
         {(article.status === "pending" || article.status === "extracting") && (
           <div style={{ fontSize: 11, color: "var(--warning)" }}>
             ページを取得して本文を抽出しています…
@@ -322,19 +378,22 @@ function DateSectionHeader({ label, urls }: { label: string; urls: string[] }) {
       alignItems: "center",
     }}>
       <span style={{ flex: 1 }}>{label}</span>
-      <button
-        onClick={handleCopy}
-        style={{
-          fontSize: 10, padding: "1px 6px", borderRadius: 3,
-          border: "1px solid var(--border)", background: "none",
-          color: copied ? "var(--success)" : "var(--text-muted)",
-          cursor: "pointer", boxShadow: "none",
-          fontWeight: 400, letterSpacing: 0, textTransform: "none",
-          transition: "color 0.2s",
-        }}
-      >
-        {copied ? "✓ コピー済み" : "URL一括コピー"}
-      </button>
+      {/* コピー対象（web 記事）が無い日付ではボタンを出さない */}
+      {urls.length > 0 && (
+        <button
+          onClick={handleCopy}
+          style={{
+            fontSize: 10, padding: "1px 6px", borderRadius: 3,
+            border: "1px solid var(--border)", background: "none",
+            color: copied ? "var(--success)" : "var(--text-muted)",
+            cursor: "pointer", boxShadow: "none",
+            fontWeight: 400, letterSpacing: 0, textTransform: "none",
+            transition: "color 0.2s",
+          }}
+        >
+          {copied ? "✓ コピー済み" : "URL一括コピー"}
+        </button>
+      )}
     </li>
   );
 }
@@ -352,6 +411,7 @@ export function ArticleListPanel({
   onSearchChange,
   onRequestSynth,
   onArticleDeleted,
+  piperInstalled = null,
 }: {
   onViewArticle?: (article: Article) => void;
   onPlay?: () => void;
@@ -361,6 +421,8 @@ export function ArticleListPanel({
   onSearchChange?: (text: string) => void;
   onRequestSynth?: (articleId: number) => void;
   onArticleDeleted?: (articleId: number) => void;
+  /** Piper 可用性（App が所有する単一判定点）。null = チェック未解決 */
+  piperInstalled?: boolean | null;
 } = {}) {
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState<string | undefined>(undefined);
@@ -462,7 +524,7 @@ export function ArticleListPanel({
 
   return (
     <section>
-      <UrlForm onAdded={addArticle} />
+      <RegisterArea onAdded={addArticle} />
 
       {/* フィルタ */}
       <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
@@ -597,7 +659,7 @@ export function ArticleListPanel({
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
             {groups.map(({ label, items }) => (
               <>
-                <DateSectionHeader key={`header-${label}`} label={label} urls={items.map(a => a.url)} />
+                <DateSectionHeader key={`header-${label}`} label={label} urls={items.filter(a => a.sourceType === "web").map(a => a.url)} />
                 {items.map((a) => (
                   <ArticleRow
                     key={a.id}
@@ -610,6 +672,7 @@ export function ArticleListPanel({
                     onDoubleClickPlay={handleDoubleClickPlay}
                     onArticleContextMenu={onArticleContextMenu}
                     onToggleFavorite={toggleFavorite}
+                    piperInstalled={piperInstalled}
                   />
                 ))}
               </>

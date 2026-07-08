@@ -17,6 +17,8 @@ pub struct Article {
     pub extracted_at: Option<String>,
     pub is_favorite: bool,
     pub language: String,
+    /// "web" = URL 記事 / "text" = テキスト記事
+    pub source_type: String,
 }
 
 // ─── フィルタ ──────────────────────────────────────────────────────────────
@@ -44,6 +46,10 @@ pub enum ArticleError {
     NotFound,
     #[error("Invalid URL: {message}")]
     InvalidUrl { message: String },
+    #[error("Content is empty")]
+    EmptyContent,
+    #[error("Not a text article")]
+    NotTextArticle,
     #[error("Database error: {message}")]
     DatabaseError { message: String },
 }

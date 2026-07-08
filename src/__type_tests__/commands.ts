@@ -4,6 +4,7 @@ import type {
   Article,
   ArticleError,
   ArticleFilter,
+  ArticleSourceType,
   ArticleStatus,
   ExtractionResult,
   HistoryFilter,
@@ -36,6 +37,8 @@ import {
   recordPlayback,
   updatePlaybackProgress,
   registerArticle,
+  registerTextArticle,
+  updateTextArticle,
   removeFromQueue,
   reorderQueue,
   retryExtract,
@@ -64,7 +67,11 @@ function checkDomainTypes() {
     extractedAt: null,
     isFavorite: false,
     language: "ja",
+    sourceType: "web",
   };
+
+  const textArticleType: ArticleSourceType = "text";
+  void textArticleType;
 
   const filter: ArticleFilter = {
     status: "ready",
@@ -73,9 +80,15 @@ function checkDomainTypes() {
     sortOrder: "desc",
   };
 
-  const err1: ArticleError = { kind: "duplicate_url" };
-  const err2: ArticleError = { kind: "invalid_url" };
-  const err3: ArticleError = { kind: "db_error", message: "err" };
+  const err1: ArticleError = { type: "duplicate_url" };
+  const err2: ArticleError = { type: "invalid_url", message: "bad" };
+  const err3: ArticleError = { type: "database_error", message: "err" };
+  const err4: ArticleError = { type: "empty_content" };
+  const err5: ArticleError = { type: "not_text_article" };
+  const err6: ArticleError = { type: "not_found" };
+  void err4;
+  void err5;
+  void err6;
 
   const ok: Result<Article, ArticleError> = { ok: true, value: article };
   const ng: Result<Article, ArticleError> = { ok: false, error: err1 };
@@ -97,6 +110,7 @@ function checkDomainTypes() {
       extractedAt: null,
       isFavorite: false,
       language: "ja",
+      sourceType: "web",
     },
   };
 
@@ -120,10 +134,11 @@ function checkDomainTypes() {
       extractedAt: null,
       isFavorite: false,
       language: "ja",
+      sourceType: "web",
     },
   };
 
-  const hf: HistoryFilter = { search: "k", fromDate: "2024-01-01", toDate: "2024-12-31" };
+  const hf: HistoryFilter ={ search: "k", fromDate: "2024-01-01", toDate: "2024-12-31" };
 
   const pw: StatsPeriod = { type: "week" };
   const pm: StatsPeriod = { type: "month" };
@@ -174,6 +189,18 @@ function checkDomainTypes() {
 async function checkCommandSignatures() {
   assertType<Promise<Result<Article, ArticleError>>>(
     registerArticle("https://example.com")
+  );
+  assertType<Promise<Result<Article, ArticleError>>>(
+    registerTextArticle("本文", "タイトル")
+  );
+  assertType<Promise<Result<Article, ArticleError>>>(
+    registerTextArticle("本文") // タイトル省略可
+  );
+  assertType<Promise<Result<Article, ArticleError>>>(
+    updateTextArticle(1, "本文", "タイトル")
+  );
+  assertType<Promise<Result<Article, ArticleError>>>(
+    updateTextArticle(1, "本文") // タイトル省略可
   );
   assertType<Promise<Article[]>>(getArticles());
   assertType<Promise<Article[]>>(getArticles({ status: "ready" }));

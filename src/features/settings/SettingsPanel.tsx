@@ -85,7 +85,7 @@ function LoginSiteSection() {
 
 type PiperPhase = "checking" | "not_installed" | "downloading" | "extracting" | "installed" | "error";
 
-function PiperTtsSection() {
+export function PiperTtsSection({ onPiperInstalled }: { onPiperInstalled?: () => void } = {}) {
   const [phase, setPhase] = useState<PiperPhase>("checking");
   const [progress, setProgress] = useState<{ downloaded: number; total: number | null }>({ downloaded: 0, total: null });
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +119,8 @@ function PiperTtsSection() {
     try {
       await downloadPiper();
       setPhase("installed");
+      // App の piperInstalled 状態を再取得させる（バッジ・ルーティングが一斉に追従する）
+      onPiperInstalled?.();
     } catch (e) {
       setPhase("error");
       setError(String(e));
@@ -302,10 +304,13 @@ export function SettingsPanel({
   clipboardEnabled,
   onToggleClipboard,
   onMp3BitrateChange,
+  onPiperInstalled,
 }: {
   clipboardEnabled: boolean;
   onToggleClipboard: () => void;
   onMp3BitrateChange?: (bitrate: number) => void;
+  /** Piper インストール成功時に App が piperInstalled 状態を再取得するためのコールバック */
+  onPiperInstalled?: () => void;
 }) {
   const { settings, voicevoxStatus, speakers, saving, update, retryConnection } = useSettings();
   const sv = statusLabel(voicevoxStatus);
@@ -403,7 +408,7 @@ export function SettingsPanel({
           )}
         </fieldset>
 
-        <PiperTtsSection />
+        <PiperTtsSection onPiperInstalled={onPiperInstalled} />
       </SettingsCategory>
 
       {/* ── 📰 記事の取得 ── */}

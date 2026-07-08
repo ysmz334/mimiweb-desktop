@@ -2,9 +2,9 @@ import { Fragment, useCallback, useMemo, useState } from "react";
 import { Play, Square } from "lucide-react";
 import { useArticles } from "@/features/articles/useArticles";
 import { useAudioCache } from "@/features/articles/useAudioCache";
-import { splitSentences } from "@/lib/voicevoxClient";
+import { segmentText } from "@/lib/languageSegmenter";
 import { buildFullText } from "@/features/viewer/viewerUtils";
-import { Favicon } from "@/shared/Favicon";
+import { SourceIcon } from "@/shared/SourceIcon";
 import { wordCloudBus } from "@/shared/wordCloudBus";
 import type { Article } from "@/shared/types";
 import type { UsePlaybackResult } from "@/features/playback/usePlayback";
@@ -148,7 +148,7 @@ export function SynthesisPanel({
     const map = new Map<number, number>();
     for (const a of unsynthVisible) {
       const text = buildFullText(a.title, a.content, a.contentHtml);
-      if (text) map.set(a.id, splitSentences(text).length);
+      if (text) map.set(a.id, segmentText(text, a.language).length);
     }
     return map;
   }, [unsynthVisible]);
@@ -309,19 +309,21 @@ export function SynthesisPanel({
                       <li
                         key={a.id}
                         onClick={() => onSelectArticle?.(a)}
-                        onContextMenu={e => { e.preventDefault(); onArticleContextMenu?.(a.url, e.clientX, e.clientY); }}
+                        onContextMenu={e => { if (a.sourceType === "text") return; e.preventDefault(); onArticleContextMenu?.(a.url, e.clientX, e.clientY); }}
                         onMouseEnter={() => wordCloudBus.hover(a.id, a.title ?? null)}
                         onMouseLeave={() => wordCloudBus.cancelPending()}
                         style={{ ...itemRowStyle, cursor: onSelectArticle ? "pointer" : "default", background: isSynthing ? "rgba(251,146,60,0.08)" : undefined }}
                       >
-                        <Favicon url={a.url} size={14} />
+                        <SourceIcon url={a.url} sourceType={a.sourceType} size={14} />
                         <div style={{ flex: 1, overflow: "hidden" }}>
                           <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                             {a.title ?? a.url}
                           </div>
-                          <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {a.url}
-                          </div>
+                          {a.sourceType !== "text" && (
+                            <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {a.url}
+                            </div>
+                          )}
                           {isSynthing && playback.synthProgress ? (
                             <div style={{ fontSize: 11, color: "var(--warning)" }}>
                               準備中: {playback.synthProgress.done}/{playback.synthProgress.total}文
@@ -411,19 +413,21 @@ export function SynthesisPanel({
                   <li
                     key={a.id}
                     onClick={() => onSelectArticle?.(a)}
-                    onContextMenu={e => { e.preventDefault(); onArticleContextMenu?.(a.url, e.clientX, e.clientY); }}
+                    onContextMenu={e => { if (a.sourceType === "text") return; e.preventDefault(); onArticleContextMenu?.(a.url, e.clientX, e.clientY); }}
                     onMouseEnter={() => wordCloudBus.hover(a.id, a.title ?? null)}
                     onMouseLeave={() => wordCloudBus.cancelPending()}
                     style={{ ...itemRowStyle, cursor: onSelectArticle ? "pointer" : "default" }}
                   >
-                    <Favicon url={a.url} size={14} />
+                    <SourceIcon url={a.url} sourceType={a.sourceType} size={14} />
                     <div style={{ flex: 1, overflow: "hidden" }}>
                       <div style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                         {a.title ?? a.url}
                       </div>
-                      <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {a.url}
-                      </div>
+                      {a.sourceType !== "text" && (
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {a.url}
+                        </div>
+                      )}
                       <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
                         {cache.sentenceCount}文 / {formatDuration(cache.totalDurationSeconds)} / {formatBytes(cache.totalSizeBytes)}
                       </div>

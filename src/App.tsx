@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Moon, Sun, Play, ArrowLeft, ArrowRight } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { onVoicevoxStatusChanged, getSettings, getArticles, registerArticle, addToQueue, getQueue, reorderQueue, checkEngineInstalled, toggleFavorite, checkForUpdate, checkPiperInstalled, onExtractionCompleted, type UpdateInfo } from "@/lib/tauriCommands";
+import { onVoicevoxStatusChanged, getSettings, getArticles, registerArticle, updateTextArticle, addToQueue, getQueue, reorderQueue, checkEngineInstalled, toggleFavorite, checkForUpdate, checkPiperInstalled, onExtractionCompleted, type UpdateInfo } from "@/lib/tauriCommands";
 import { wordCloudBus } from "@/shared/wordCloudBus";
 import { EngineSetupScreen } from "@/features/setup/EngineSetupScreen";
+import { usePiperInstalled } from "@/features/setup/usePiperInstalled";
+import { usePiperPrompt } from "@/features/setup/usePiperPrompt";
 import { usePlayback } from "@/features/playback/usePlayback";
 import { PlaybackBar } from "@/features/playback/PlaybackBar";
 import { ArticleListPanel } from "@/features/articles/ArticleListPanel";
@@ -381,7 +383,15 @@ function AppMain() {
 
   const [voicevoxStatus, setVoicevoxStatus] = useState<VoicevoxStatus>({ state: "starting" });
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
-  const [showPiperPrompt, setShowPiperPrompt] = useState(false);
+  // Piper 可用性の単一判定点（バッジ・合成ルーティング・誘導バナーはすべてこの状態を参照する）。
+  // セットアップ画面完了時は AppMain 再マウントで再取得され、設定タブでの導入成功時は
+  // onPiperInstalled コールバック経由で再取得する
+  const { piperInstalled, refreshPiperInstalled } = usePiperInstalled();
+  const piperInstalledRef = useRef<boolean | null>(piperInstalled);
+  piperInstalledRef.current = piperInstalled;
+  // Piper 誘導バナー（登録時誘導 / フォールバック再生通知。セッション中 dismiss で再表示なし）
+  const { piperPrompt, requestPiperPrompt, dismissPiperPrompt } = usePiperPrompt(piperInstalled);
+
   const [showShortcuts, setShowShortcuts] = useState(false);
 
   // ? キーでショートカット一覧オーバーレイを表示／非表示する
@@ -421,17 +431,25 @@ function AppMain() {
   // 記事抽出イベントをアプリ全体（常時）で受信する
   useExtractionListener();
 
-  // 英語記事の抽出が完了したとき、Piper TTS 未インストールなら誘導バナーを表示する
+  // 英語文を含む記事（英語のみ・混在）の抽出・登録・編集が完了したとき、
+  // Piper 未導入なら誘導バナーを表示する。テキスト記事の登録・編集コマンドも
+  // 同じ抽出完了イベントを emit するため、この単一経路で誘導される
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     onExtractionCompleted((article) => {
-      if (article.language !== "en") return;
-      checkPiperInstalled().then((installed) => {
-        if (!installed) setShowPiperPrompt(true);
-      }).catch(() => {});
+      if (article.language !== "en" && article.language !== "mixed") return;
+      const known = piperInstalledRef.current;
+      if (known === false) {
+        requestPiperPrompt("registered", article.language);
+      } else if (known === null) {
+        // 起動直後で可用性が未解決の場合のみ直接確認する
+        checkPiperInstalled().then((installed) => {
+          if (!installed) requestPiperPrompt("registered", article.language);
+        }).catch(() => {});
+      }
     }).then((fn) => { unlisten = fn; });
     return () => { unlisten?.(); };
-  }, []);
+  }, [requestPiperPrompt]);
   const [port, setPort] = useState(50021);
   const [speakerId, setSpeakerId] = useState(3);
   const [speedScale, setSpeedScale] = useState(1.0);
@@ -562,7 +580,7 @@ function AppMain() {
     return () => { unlisten?.(); };
   }, []);
 
-  const playback = usePlayback({ port, speakerId, initialSpeedScale: speedScale, mp3Bitrate });
+  const playback = usePlayback({ port, speakerId, initialSpeedScale: speedScale, mp3Bitrate, piperInstalled });
 
   // 再生中の記事を特定
   const playingArticleId =
@@ -572,6 +590,17 @@ function AppMain() {
   const playingArticle = playingArticleId != null
     ? (articles.find((a) => a.id === playingArticleId) ?? null)
     : null;
+
+  // フォールバック対象記事（英語文を含む × Piper 未導入）の再生開始時に
+  // インストール導線付きの通知を表示する（セッション中 dismiss 済みなら再表示されない）
+  useEffect(() => {
+    if (piperInstalled !== false) return;
+    const phase = playback.state.phase;
+    if (phase !== "playing" && phase !== "synthesizing") return;
+    if (!playingArticle) return;
+    requestPiperPrompt("fallback", playingArticle.language);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [piperInstalled, playback.state.phase, playingArticle?.id]);
 
   // 再生が開始されたら自動でプレイヤータブへ遷移し、再生中記事を表示（履歴に積む）
   const prevPhaseRef = useRef<string>("idle");
@@ -632,6 +661,22 @@ function AppMain() {
     setArticles(fresh);
   }, []);
 
+  // テキスト記事の編集保存。putAudio が全置換契約のため、旧本文の合成が編集後に
+  // 新エントリを上書きするレースを①で遮断してから②③を直列実行する:
+  // ① 対象記事の進行中合成をキャンセル → ② 更新コマンド → ③ 一覧反映（再生中なら先頭から再生し直す）
+  const handleSaveTextEdit = useCallback(async (id: number, content: string, title?: string) => {
+    playback.cancelArticleSynth(id);
+    const result = await updateTextArticle(id, content, title);
+    if (result.ok) {
+      window.dispatchEvent(new CustomEvent(ARTICLES_CHANGED_EVENT));
+      const s = playback.state;
+      if (s.phase !== "idle" && s.phase !== "error" && "articleId" in s && s.articleId === id) {
+        playback.restart();
+      }
+    }
+    return result;
+  }, [playback]);
+
   // ダブルクリック即時再生: 再生中なら現在の再生を中断してキュー先頭から再起動
   const handlePlayNow = useCallback(() => {
     const phase = playback.state.phase;
@@ -649,7 +694,7 @@ function AppMain() {
     if (result.ok) {
       articleId = result.value.id;
       window.dispatchEvent(new CustomEvent(ARTICLES_CHANGED_EVENT));
-    } else if (result.error.kind === "duplicate_url") {
+    } else if (result.error.type === "duplicate_url") {
       const existing = await getArticles().catch(() => [] as Article[]);
       const found = existing.find((a) => a.url === url);
       if (!found) return;
@@ -806,8 +851,8 @@ function AppMain() {
         <UpdateBanner info={updateInfo} onDismiss={() => setUpdateInfo(null)} />
       )}
 
-      {/* Piper TTS 誘導バナー（英語記事登録時・未インストール時） */}
-      {showPiperPrompt && (
+      {/* Piper TTS 誘導バナー（登録時誘導 / フォールバック再生通知・未インストール時） */}
+      {piperPrompt && (
         <div style={{
           background: "#fff3cd",
           color: "#7a5b00",
@@ -820,10 +865,14 @@ function AppMain() {
           borderBottom: "1px solid #f0d97a",
         }}>
           <span style={{ flex: 1 }}>
-            英語の記事が登録されました。英語の読み上げには <strong>Piper TTS</strong> のインストールが必要です。
+            {piperPrompt === "fallback" ? (
+              <>この記事の英語文は日本語音声で代読されています。<strong>Piper TTS</strong> を導入すると英語音声で読み上げられます。</>
+            ) : (
+              <>英語の記事が登録されました。英語の読み上げには <strong>Piper TTS</strong> のインストールが必要です。</>
+            )}
           </span>
           <button
-            onClick={() => { setTab("settings"); setShowPiperPrompt(false); }}
+            onClick={() => { setTab("settings"); dismissPiperPrompt(); }}
             style={{
               fontSize: 12, padding: "3px 10px",
               background: "#e0a800", border: "none", borderRadius: 4,
@@ -833,7 +882,7 @@ function AppMain() {
             設定を開く
           </button>
           <button
-            onClick={() => setShowPiperPrompt(false)}
+            onClick={dismissPiperPrompt}
             style={{
               fontSize: 16, background: "none", border: "none",
               color: "#7a5b00", cursor: "pointer", padding: "0 4px",
@@ -913,6 +962,7 @@ function AppMain() {
                 if (phase !== "idle" && phase !== "error") playback.restart();
               }
             }}
+            piperInstalled={piperInstalled}
           />
         )}
         {tab === "synthesis" && (
@@ -936,6 +986,7 @@ function AppMain() {
             clipboardEnabled={clipboardEnabled}
             onToggleClipboard={toggleClipboard}
             onMp3BitrateChange={setMp3Bitrate}
+            onPiperInstalled={() => { void refreshPiperInstalled(); }}
           />
         )}
         {tab === "player"   && (
@@ -953,6 +1004,8 @@ function AppMain() {
                   : undefined}
                 onRefresh={() => handleRefresh().catch(() => {})}
                 onToggleFavorite={(id) => handleToggleFavorite(id).catch(() => {})}
+                onSaveTextEdit={handleSaveTextEdit}
+                piperInstalled={piperInstalled}
                 viewGeneration={playerViewGeneration}
                 searchWord={sharedSearch}
                 onSearchWordChange={handleSearchChange}

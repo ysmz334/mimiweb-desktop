@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { Star, Play, X } from "lucide-react";
 import { useHistory } from "./useHistory";
 import { getStats } from "@/lib/tauriCommands";
-import { Favicon } from "@/shared/Favicon";
+import { SourceIcon } from "@/shared/SourceIcon";
+import { LangBadge } from "@/shared/LangBadge";
 import { wordCloudBus } from "@/shared/wordCloudBus";
 import { markSelfCopied } from "@/features/clipboard/useClipboardMonitor";
 import type { Article, HistorySearchTarget, PlaybackHistory, Stats, StatsPeriod } from "@/shared/types";
@@ -410,6 +411,8 @@ function HistoryRow({
       onDoubleClick={handleDoubleClick}
       onMouseLeave={() => wordCloudBus.cancelPending()}
       onContextMenu={(e) => {
+        // テキスト記事は URL 依存メニューを出さない（グローバルのテキストコピーは従来通り）
+        if (item.article?.sourceType === "text") return;
         const url = item.article?.url;
         if (!url) return;
         e.preventDefault();
@@ -424,15 +427,17 @@ function HistoryRow({
         gap: 8,
       }}
     >
-      {item.article?.url && <Favicon url={item.article.url} size={14} />}
-      {item.article?.language === "en" && (
-        <span style={{ fontSize: 10, fontWeight: 700, color: "#0066cc", background: "#e8f0fe", borderRadius: 3, padding: "0 4px", flexShrink: 0 }}>EN</span>
-      )}
+      {item.article?.url && <SourceIcon url={item.article.url} sourceType={item.article.sourceType} size={14} />}
+      {item.article && <LangBadge language={item.article.language} />}
       <div
         style={{ flex: 1, overflow: "hidden" }}
         onMouseEnter={() => {
           if (item.articleId !== null) {
-            wordCloudBus.hover(item.articleId, item.article?.title ?? null, item.article?.url ?? null);
+            wordCloudBus.hover(
+              item.articleId,
+              item.article?.title ?? null,
+              item.article?.sourceType === "text" ? null : item.article?.url ?? null
+            );
           }
         }}
       >
@@ -544,19 +549,22 @@ function DateSectionHeader({
       }}
     >
       <span style={{ flex: 1 }}>{label}</span>
-      <button
-        onClick={handleCopy}
-        style={{
-          fontSize: 10, padding: "1px 6px", borderRadius: 3,
-          border: "1px solid var(--border)", background: "none",
-          color: copied ? "var(--success)" : "var(--text-muted)",
-          cursor: "pointer", boxShadow: "none",
-          fontWeight: 400, letterSpacing: 0, textTransform: "none",
-          transition: "color 0.2s",
-        }}
-      >
-        {copied ? "✓ コピー済み" : "URL一括コピー"}
-      </button>
+      {/* コピー対象（web 記事）が無い日付ではボタンを出さない */}
+      {urls.length > 0 && (
+        <button
+          onClick={handleCopy}
+          style={{
+            fontSize: 10, padding: "1px 6px", borderRadius: 3,
+            border: "1px solid var(--border)", background: "none",
+            color: copied ? "var(--success)" : "var(--text-muted)",
+            cursor: "pointer", boxShadow: "none",
+            fontWeight: 400, letterSpacing: 0, textTransform: "none",
+            transition: "color 0.2s",
+          }}
+        >
+          {copied ? "✓ コピー済み" : "URL一括コピー"}
+        </button>
+      )}
     </li>
   );
 }
@@ -885,7 +893,10 @@ export function HistoryPanel({
                     key={`header-${dateStr}`}
                     label={label}
                     dateStr={dateStr}
-                    urls={items.map(item => item.article?.url).filter((url): url is string => !!url)}
+                    urls={items
+                      .filter(item => item.article?.sourceType === "web")
+                      .map(item => item.article?.url)
+                      .filter((url): url is string => !!url)}
                     onHover={handleDateHover}
                   />
                 {items.map((item) => (

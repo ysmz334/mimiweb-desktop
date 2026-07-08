@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Play, X, ChevronLeft, ChevronRight, RotateCw, Star } from "lucide-react";
+import { Play, X, ChevronLeft, ChevronRight, RotateCw, Star, Pencil } from "lucide-react";
 import DOMPurify from "dompurify";
 import { buildFullText, markSkippedElements } from "./viewerUtils";
-import { splitSentences } from "@/lib/voicevoxClient";
+import { segmentText } from "@/lib/languageSegmenter";
 import { fetchPageHtml, registerArticle, getArticleKeywords } from "@/lib/tauriCommands";
 import { selectKeySentenceIndices } from "@/lib/summarize";
 import { getCurrentKeybindings, matchesBinding } from "@/lib/keybindings";
-import type { Article, PlaybackState } from "@/shared/types";
+import { LangBadge } from "@/shared/LangBadge";
+import { FallbackBadge } from "@/shared/FallbackBadge";
+import type { Article, ArticleError, PlaybackState, Result } from "@/shared/types";
+
+function editErrorMessage(e: ArticleError): string {
+  if (e.type === "empty_content") return "本文を入力してください";
+  if (e.type === "not_text_article") return "テキスト記事のみ編集できます";
+  if (e.type === "not_found") return "記事が見つかりません";
+  if (e.type === "database_error") return `エラー: ${e.message}`;
+  return "保存に失敗しました";
+}
 
 function clearHighlights(container: HTMLElement) {
   container.querySelectorAll("mark[data-tts]").forEach((m) => {
@@ -519,6 +529,8 @@ export function ArticleViewerPanel({
   onPlayNow,
   onRefresh,
   onToggleFavorite,
+  onSaveTextEdit,
+  piperInstalled = null,
   viewGeneration,
   searchWord,
   onSearchWordChange,
@@ -536,6 +548,10 @@ export function ArticleViewerPanel({
   onPlayNow?: () => void;
   onRefresh?: () => void;
   onToggleFavorite?: (id: number) => void;
+  /** テキスト記事の編集保存（App が合成キャンセル→更新→反映の順序を所有する） */
+  onSaveTextEdit?: (id: number, content: string, title?: string) => Promise<Result<Article, ArticleError>>;
+  /** Piper 可用性（App が所有する単一判定点）。null = チェック未解決 */
+  piperInstalled?: boolean | null;
   viewGeneration?: number;
   searchWord?: string;
   onSearchWordChange?: (text: string) => void;
@@ -556,11 +572,39 @@ export function ArticleViewerPanel({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchHtmlMatchesRef = useRef<HTMLElement[]>([]);
 
-  // 記事が切り替わったらブラウズ状態をリセット
-  useEffect(() => { setBrowsePage(null); setBrowseCtxMenu(null); }, [article.id]);
+  // テキスト記事の編集モード（null = 通常表示）
+  const [editState, setEditState] = useState<{ title: string; content: string } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
 
-  // 外部から同一記事が再クリックされたときもブラウズ状態をリセット
-  useEffect(() => { setBrowsePage(null); setBrowseCtxMenu(null); }, [viewGeneration]);
+  // 記事が切り替わったらブラウズ状態・編集状態をリセット
+  useEffect(() => {
+    setBrowsePage(null); setBrowseCtxMenu(null);
+    setEditState(null); setEditError(null);
+  }, [article.id]);
+
+  // 外部から同一記事が再クリックされたときもブラウズ状態・編集状態をリセット
+  useEffect(() => {
+    setBrowsePage(null); setBrowseCtxMenu(null);
+    setEditState(null); setEditError(null);
+  }, [viewGeneration]);
+
+  async function handleEditSave() {
+    if (!onSaveTextEdit || !editState || !editState.content.trim() || editSaving) return;
+    setEditSaving(true);
+    setEditError(null);
+    const result = await onSaveTextEdit(
+      article.id,
+      editState.content,
+      editState.title.trim() || undefined
+    );
+    setEditSaving(false);
+    if (result.ok) {
+      setEditState(null);
+    } else {
+      setEditError(editErrorMessage(result.error));
+    }
+  }
 
   // 外部 searchWord（ワードクラウドクリック・タブ間共有検索）を即時反映
   useEffect(() => {
@@ -694,11 +738,13 @@ export function ArticleViewerPanel({
     article.status === "queued" ||
     article.status === "played";
 
+  // 再生ループと同じ languageSegmenter を経由することで、ハイライト・クリックジャンプの
+  // インデックスが合成・再生側の文分割と常に一致する（mixed 記事の英語行の文分割を含む）
   const segments = hasContent
-    ? splitSentences(
+    ? segmentText(
         buildFullText(article.title, article.content, article.contentHtml),
-        (article.language ?? "ja") as "ja" | "en",
-      )
+        article.language ?? "ja",
+      ).map((s) => s.text)
     : [];
 
   // スクレイピングした HTML はメイン画面に直接描画するため、DOMPurify で必ずサニタイズする。
@@ -938,8 +984,9 @@ export function ArticleViewerPanel({
         >
           {title}
         </span>
-        {!browsePage && article.language === "en" && (
-          <span style={{ fontSize: 10, fontWeight: 700, color: "#0066cc", background: "#e8f0fe", borderRadius: 3, padding: "0 4px", flexShrink: 0, marginLeft: 4 }}>EN</span>
+        {!browsePage && <LangBadge language={article.language} />}
+        {!browsePage && (
+          <FallbackBadge language={article.language} piperInstalled={piperInstalled} size={14} />
         )}
         {onClose && (
           <button
@@ -962,8 +1009,8 @@ export function ArticleViewerPanel({
         )}
       </div>
 
-      {/* 検索バー: ビューアタブ・テキストモード・展開時のみ表示 */}
-      {showFontSlider && !collapsed && !browsePage && !browseLoading && (
+      {/* 検索バー: ビューアタブ・テキストモード・展開時のみ表示（編集中は非表示） */}
+      {showFontSlider && !collapsed && !browsePage && !browseLoading && !editState && (
         <div
           style={{
             display: "flex",
@@ -1077,13 +1124,82 @@ export function ArticleViewerPanel({
             minHeight: 0,
           }}
         >
-          {summaryMode && isActiveArticle && (
+          {summaryMode && isActiveArticle && !editState && (
             <div style={{
               background: "rgba(0,102,204,0.08)", border: "1px solid rgba(0,102,204,0.2)",
               borderRadius: 6, padding: "6px 10px", marginBottom: 10, fontSize: 12,
               color: "var(--accent)", display: "flex", alignItems: "center", gap: 6,
             }}>
               🔑 要点モード: 重要文のみ読み上げます{article.contentHtml ? "" : "（薄く表示された文はスキップされます）"}
+            </div>
+          )}
+
+          {/* テキスト記事のみ: 本文上部の編集ボタン */}
+          {hasContent && !editState && article.sourceType === "text" && onSaveTextEdit && (
+            <div style={{ marginBottom: 8 }}>
+              <button
+                aria-label="編集"
+                onClick={() => {
+                  setEditState({ title: article.title ?? "", content: article.content ?? "" });
+                  setEditError(null);
+                }}
+                style={{
+                  padding: "3px 10px",
+                  fontSize: 12,
+                  background: "none",
+                  color: "var(--text-muted)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  boxShadow: "none",
+                  lineHeight: "1.6",
+                  display: "inline-flex", alignItems: "center", gap: 4,
+                }}
+              >
+                <Pencil size={12} /> 編集
+              </button>
+            </div>
+          )}
+
+          {/* 編集モード: タイトル・本文の編集と保存/キャンセルのみ */}
+          {hasContent && editState && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input
+                type="text"
+                value={editState.title}
+                onChange={(e) => setEditState({ ...editState, title: e.target.value })}
+                placeholder="タイトル（省略時は本文の先頭行）"
+                style={{ padding: "6px 10px", fontSize: 14 }}
+              />
+              <textarea
+                value={editState.content}
+                onChange={(e) => setEditState({ ...editState, content: e.target.value })}
+                rows={16}
+                style={{
+                  padding: "6px 10px",
+                  fontSize: 14,
+                  fontFamily: "inherit",
+                  lineHeight: 1.6,
+                  resize: "vertical",
+                }}
+              />
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <button
+                  onClick={() => { void handleEditSave(); }}
+                  disabled={!editState.content.trim() || editSaving}
+                >
+                  {editSaving ? "保存中…" : "保存"}
+                </button>
+                <button
+                  onClick={() => { setEditState(null); setEditError(null); }}
+                  disabled={editSaving}
+                >
+                  キャンセル
+                </button>
+                {editError && (
+                  <span style={{ color: "var(--danger, #c00)", fontSize: 13 }}>{editError}</span>
+                )}
+              </div>
             </div>
           )}
           {isLoading && (
@@ -1096,7 +1212,7 @@ export function ArticleViewerPanel({
           )}
 
           {/* HTML モード: 見出し・段落構造を保持。クリックでセグメントジャンプ */}
-          {hasContent && article.contentHtml && (
+          {hasContent && !editState && article.contentHtml && (
             <div
               ref={htmlRef}
               // eslint-disable-next-line react/no-danger
@@ -1111,7 +1227,7 @@ export function ArticleViewerPanel({
           )}
 
           {/* プレーンテキストモード: 文単位スパン（ブロック表示＋番号付き） */}
-          {hasContent && !article.contentHtml &&
+          {hasContent && !editState && !article.contentHtml &&
             segments.map((seg, i) => {
               const isCurrent = isActiveArticle && !isIdle && segmentIndex === i;
               const isUnsynth = isActiveArticle && !isIdle && isSynthInProgress && i >= synthesizedCount;
@@ -1122,6 +1238,7 @@ export function ArticleViewerPanel({
               return (
                 <span
                   key={i}
+                  data-seg-idx={i}
                   ref={(el) => { spanRefs.current[i] = el; }}
                   onClick={isUnsynth ? undefined : () => onSegmentClick?.(i)}
                   style={{
@@ -1166,8 +1283,8 @@ export function ArticleViewerPanel({
         </div>
       )}
 
-      {/* フォントサイズスライダー (showFontSlider=true かつ展開時のみ) */}
-      {showFontSlider && !collapsed && (
+      {/* フォントサイズスライダー (showFontSlider=true かつ展開時のみ。編集中は非表示) */}
+      {showFontSlider && !collapsed && !editState && (
         <div
           style={{
             display: "flex",
@@ -1204,7 +1321,8 @@ export function ArticleViewerPanel({
               <span style={{ width: 1, alignSelf: "stretch", background: "var(--border)", margin: "0 2px", flexShrink: 0 }} />
             </>
           )}
-          {/* テキスト / ウェブ 切り替えトグル */}
+          {/* テキスト / ウェブ 切り替えトグル（テキスト記事には元ページが無いため提供しない） */}
+          {article.sourceType !== "text" && (
           <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 4, overflow: "hidden", flexShrink: 0 }}>
             <button
               onClick={() => { setBrowsePage(null); setBrowseCtxMenu(null); }}
@@ -1244,8 +1362,9 @@ export function ArticleViewerPanel({
               ウェブ
             </button>
           </div>
-          {/* ⟳ 更新: テキスト表示時のみ表示 */}
-          {!browsePage && onRefresh && (
+          )}
+          {/* ⟳ 更新: テキスト表示時のみ表示（テキスト記事には再取得元が無いため提供しない） */}
+          {!browsePage && onRefresh && article.sourceType !== "text" && (
             <button
               onClick={onRefresh}
               title="記事を再取得する"

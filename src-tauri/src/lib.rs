@@ -127,6 +127,8 @@ pub fn run() {
                         .execute(&pool)
                         .await?;
                 }
+                // articles の source_type カラムを追加（既存 DB 用）
+                db::ensure_source_type_column(&pool).await?;
                 // playback_history の再生位置・開始時刻カラムを追加（既存 DB 用）
                 let has_started_at: bool = sqlx::query_scalar(
                     "SELECT COUNT(*) > 0 FROM pragma_table_info('playback_history') WHERE name = 'started_at'"
@@ -185,6 +187,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::article::register_article,
+            commands::article::register_text_article,
+            commands::article::update_text_article,
             commands::article::get_articles,
             commands::article::delete_article,
             commands::article::retry_extract,

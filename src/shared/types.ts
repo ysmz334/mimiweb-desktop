@@ -14,6 +14,12 @@ export type ArticleStatus =
   | "queued"
   | "played";
 
+/** "web" = URL 記事 / "text" = テキスト記事 */
+export type ArticleSourceType = "web" | "text";
+
+/** 記事全体の言語区分。"mixed" = 日英混在（文単位で読み分ける） */
+export type ArticleLanguage = "ja" | "en" | "mixed";
+
 export interface Article {
   id: number;
   url: string;
@@ -25,7 +31,8 @@ export interface Article {
   registeredAt: string; // ISO 8601
   extractedAt: string | null; // ISO 8601
   isFavorite: boolean;
-  language: "ja" | "en";
+  language: ArticleLanguage;
+  sourceType: ArticleSourceType;
 }
 
 export type ArticleSearchTarget = "title" | "content" | "url" | "all";
@@ -39,10 +46,14 @@ export interface ArticleFilter {
   isFavorite?: boolean;
 }
 
+/** Rust 側 ArticleError（serde tag = "type", snake_case）のシリアライズ形と同期する */
 export type ArticleError =
-  | { kind: "duplicate_url" }
-  | { kind: "invalid_url" }
-  | { kind: "db_error"; message: string };
+  | { type: "duplicate_url" }
+  | { type: "not_found" }
+  | { type: "invalid_url"; message: string }
+  | { type: "empty_content" }
+  | { type: "not_text_article" }
+  | { type: "database_error"; message: string };
 
 // --- キュー ---
 

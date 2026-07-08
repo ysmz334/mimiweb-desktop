@@ -8,7 +8,7 @@ const LIST_SQL: &str = "
     SELECT ph.id, ph.article_id, ph.started_at, ph.completed_at, ph.duration_seconds,
            ph.last_sentence_index, ph.sentence_count,
            a.url, a.title, a.content, a.content_html, a.status, a.error_message,
-           a.registered_at, a.extracted_at, a.is_favorite, a.language
+           a.registered_at, a.extracted_at, a.is_favorite, a.language, a.source_type
     FROM playback_history ph
     LEFT JOIN articles a ON ph.article_id = a.id
 ";
@@ -145,6 +145,16 @@ impl HistoryRepository {
         .bind(id)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// 指定記事の全履歴のレジューム位置のみを無効化する。
+    /// duration_seconds・completed_at 等の統計は保持する（ヒートマップに影響させない）。
+    pub async fn clear_resume_position(&self, article_id: i64) -> Result<(), HistoryRepoError> {
+        sqlx::query("UPDATE playback_history SET last_sentence_index = NULL WHERE article_id = ?")
+            .bind(article_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

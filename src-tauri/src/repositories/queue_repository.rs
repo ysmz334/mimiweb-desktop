@@ -7,7 +7,7 @@ use crate::models::queue::{QueueItem, QueueJoinRow};
 const LIST_SQL: &str = "
     SELECT qi.id, qi.article_id, qi.position, qi.added_at,
            a.url, a.title, a.content, a.content_html, a.status, a.error_message,
-           a.registered_at, a.extracted_at, a.is_favorite, a.language
+           a.registered_at, a.extracted_at, a.is_favorite, a.language, a.source_type
     FROM queue_items qi
     JOIN articles a ON qi.article_id = a.id
     ORDER BY qi.position ASC

@@ -1,6 +1,6 @@
 import { useRef, useState, useLayoutEffect, useEffect, useMemo } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { Play, X, Pin } from "lucide-react";
+import { Play, X, Pin, FileText } from "lucide-react";
 import { useQueue } from "./useQueue";
 import { wordCloudBus } from "@/shared/wordCloudBus";
 import { WordCloud } from "@/shared/WordCloud";
@@ -82,6 +82,8 @@ function SidebarItem({
       ref={itemRef}
       draggable
       onContextMenu={(e) => {
+        // テキスト記事は URL 依存メニューを出さない（グローバルのテキストコピーは従来通り）
+        if (item.article.sourceType === "text") return;
         e.preventDefault();
         onArticleContextMenu?.(item.article.url, e.clientX, e.clientY);
       }}
@@ -95,7 +97,7 @@ function SidebarItem({
       onDrop={(e) => { e.preventDefault(); onDrop(item.id); }}
       onDragEnd={onDragEnd}
       onDoubleClick={onDoubleClick}
-      onMouseEnter={() => { setHovered(true); wordCloudBus.hover(item.article.id, item.article.title ?? null, item.article.url); }}
+      onMouseEnter={() => { setHovered(true); wordCloudBus.hover(item.article.id, item.article.title ?? null, item.article.sourceType === "text" ? null : item.article.url); }}
       onMouseLeave={() => { setHovered(false); wordCloudBus.cancelPending(); }}
       title={collapsed ? title : undefined}
       style={{
@@ -122,9 +124,17 @@ function SidebarItem({
         style={{ position: "relative", flexShrink: 0, cursor: onSelect ? "pointer" : "default" }}
         onClick={() => onSelect?.(item.article)}
       >
-        <Favicon url={item.article.url} />
-        {item.article.language === "en" && (
-          <span style={{ position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, color: "#0066cc", background: "#e8f0fe", borderRadius: 2, padding: "0 2px", lineHeight: 1.4, pointerEvents: "none" }}>EN</span>
+        {item.article.sourceType === "text" ? (
+          <span title="テキスト記事" style={{ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", flexShrink: 0 }}>
+            <FileText size={16} />
+          </span>
+        ) : (
+          <Favicon url={item.article.url} />
+        )}
+        {(item.article.language === "en" || item.article.language === "mixed") && (
+          <span style={{ position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, color: "#0066cc", background: "#e8f0fe", borderRadius: 2, padding: "0 2px", lineHeight: 1.4, pointerEvents: "none" }}>
+            {item.article.language === "en" ? "EN" : "JA·EN"}
+          </span>
         )}
         {isPlaying && (
           <span style={{

@@ -46,6 +46,65 @@ impl ArticleRepository {
         }
     }
 
+    /// テキスト記事を登録する。抽出工程を経ないため status='ready'・extracted_at=now で
+    /// 単発 INSERT する。content_html は持たない（プレーンテキスト表示経路を使用）。
+    pub async fn insert_text(
+        &self,
+        url: &str,
+        title: &str,
+        content: &str,
+        language: &str,
+    ) -> Result<Article, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "INSERT INTO articles (url, title, content, status, registered_at, extracted_at, language, source_type)
+             VALUES (?, ?, ?, 'ready', ?, ?, ?, 'text')",
+        )
+        .bind(url)
+        .bind(title)
+        .bind(content)
+        .bind(&now)
+        .bind(&now)
+        .bind(language)
+        .execute(&self.pool)
+        .await;
+
+        match result {
+            Ok(r) => self.get_by_id(r.last_insert_rowid()).await,
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                Err(RepositoryError::DuplicateUrl)
+            }
+            Err(e) => Err(RepositoryError::Database(e)),
+        }
+    }
+
+    /// テキスト記事の本文・タイトル・言語を更新する。source_type の検証は呼び出し側で行う。
+    pub async fn update_text_content(
+        &self,
+        id: i64,
+        title: &str,
+        content: &str,
+        language: &str,
+    ) -> Result<Article, RepositoryError> {
+        let now = Utc::now().to_rfc3339();
+        let rows = sqlx::query(
+            "UPDATE articles SET title = ?, content = ?, language = ?, extracted_at = ? WHERE id = ?",
+        )
+        .bind(title)
+        .bind(content)
+        .bind(language)
+        .bind(&now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        if rows == 0 {
+            return Err(RepositoryError::NotFound(id));
+        }
+        self.get_by_id(id).await
+    }
+
     pub async fn get_by_id(&self, id: i64) -> Result<Article, RepositoryError> {
         sqlx::query_as::<_, Article>("SELECT * FROM articles WHERE id = ?")
             .bind(id)
@@ -169,18 +228,20 @@ impl ArticleRepository {
                     qb.push(" AND content LIKE ");
                     qb.push_bind(pattern);
                 }
+                // URL 検索はプレースホルダ URL（text://）を持つテキスト記事を除外する
                 "url" => {
-                    qb.push(" AND url LIKE ");
+                    qb.push(" AND (url LIKE ");
                     qb.push_bind(pattern);
+                    qb.push(" AND source_type = 'web')");
                 }
                 _ => {
                     qb.push(" AND (title LIKE ");
                     qb.push_bind(pattern.clone());
                     qb.push(" OR content LIKE ");
                     qb.push_bind(pattern.clone());
-                    qb.push(" OR url LIKE ");
+                    qb.push(" OR (url LIKE ");
                     qb.push_bind(pattern);
-                    qb.push(")");
+                    qb.push(" AND source_type = 'web'))");
                 }
             }
         }
@@ -289,6 +350,15 @@ mod tests {
         let r = repo().await;
         let article = r.insert("https://lang-default.com").await.unwrap();
         assert_eq!(article.language, "ja", "insert 後の language はデフォルト 'ja' であるべき");
+    }
+
+    // ── insert (source_type default) ──
+
+    #[tokio::test]
+    async fn insert_defaults_source_type_to_web() {
+        let r = repo().await;
+        let article = r.insert("https://source-type-default.com").await.unwrap();
+        assert_eq!(article.source_type, "web", "insert 後の source_type はデフォルト 'web' であるべき");
     }
 
     // ── save_content ──
@@ -405,6 +475,79 @@ mod tests {
 
         assert_eq!(articles.len(), 1);
         assert!(articles[0].url.contains("example"));
+    }
+
+    // ── list (テキスト記事の URL 検索除外) ──
+
+    #[tokio::test]
+    async fn list_url_search_excludes_text_articles() {
+        let r = repo().await;
+        r.insert("https://example.com/text-page").await.unwrap();
+        r.insert_text("text://uuid-1", "タイトル", "本文", "ja").await.unwrap();
+
+        // プレースホルダ URL に部分一致するパターンでも text 記事はヒットしない
+        let filter = ArticleFilter {
+            search: Some("text".to_string()),
+            search_target: Some("url".to_string()),
+            ..Default::default()
+        };
+        let results = r.list(&filter).await.unwrap();
+        assert_eq!(results.len(), 1, "URL 検索は web 記事のみヒットすべき");
+        assert_eq!(results[0].source_type, "web");
+    }
+
+    #[tokio::test]
+    async fn list_all_search_excludes_text_articles_by_url_only() {
+        let r = repo().await;
+        r.insert_text("text://uuid-abc", "園芸のタイトル", "園芸の本文です", "ja")
+            .await
+            .unwrap();
+
+        // 「すべて」検索: プレースホルダ URL 部分（uuid）に一致してもヒットしない
+        let filter = ArticleFilter {
+            search: Some("uuid-abc".to_string()),
+            search_target: Some("all".to_string()),
+            ..Default::default()
+        };
+        let results = r.list(&filter).await.unwrap();
+        assert!(results.is_empty(), "プレースホルダ URL は「すべて」検索でもヒットしないべき");
+
+        // 「すべて」検索: タイトル・本文の一致では従来通りヒットする
+        let filter = ArticleFilter {
+            search: Some("園芸".to_string()),
+            search_target: Some("all".to_string()),
+            ..Default::default()
+        };
+        let results = r.list(&filter).await.unwrap();
+        assert_eq!(results.len(), 1, "タイトル・本文一致ではテキスト記事もヒットすべき");
+    }
+
+    #[tokio::test]
+    async fn list_title_and_content_search_still_hit_text_articles() {
+        let r = repo().await;
+        r.insert_text("text://uuid-xyz", "検索用タイトル", "検索用の本文テキスト", "ja")
+            .await
+            .unwrap();
+
+        let by_title = r
+            .list(&ArticleFilter {
+                search: Some("検索用タイトル".to_string()),
+                search_target: Some("title".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(by_title.len(), 1, "タイトル検索はテキスト記事にヒットすべき");
+
+        let by_content = r
+            .list(&ArticleFilter {
+                search: Some("本文テキスト".to_string()),
+                search_target: Some("content".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(by_content.len(), 1, "本文検索はテキスト記事にヒットすべき");
     }
 
     #[tokio::test]

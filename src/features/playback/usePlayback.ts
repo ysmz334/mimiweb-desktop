@@ -1,5 +1,5 @@
 import { useReducer, useRef, useState, useCallback, useEffect } from "react";
-import { VoicevoxClient, VoicevoxClientError, splitSentences } from "@/lib/voicevoxClient";
+import { VoicevoxClient, VoicevoxClientError } from "@/lib/voicevoxClient";
 import { PiperClient } from "@/lib/piperClient";
 import {
   getQueue,
@@ -9,16 +9,30 @@ import {
   updatePlaybackProgress,
   getLastPlayback,
   getArticleKeywords,
+  checkPiperInstalled,
 } from "@/lib/tauriCommands";
 import { selectKeySentenceIndices } from "@/lib/summarize";
 import { QUEUE_CHANGED_EVENT } from "@/features/queue/useQueue";
 import {
-  getAudio,
-  putAudio,
+  getAudioEntry,
+  putAudioV2,
+  reuseSentences,
+  sentenceCacheKey,
+  deriveMeta,
+  isV2Entry,
   computeWavDuration,
   CACHE_UPDATED_EVENT,
-  type CacheEntry,
+  type AnyCacheEntry,
+  type SentenceAudio,
+  type SynthesisSpec,
 } from "@/lib/audioCache";
+import { normalizeWavLoudness } from "@/lib/audioNormalizer";
+import {
+  segmentText,
+  type ArticleLanguage,
+  type SentenceLang,
+  type SentenceSegment,
+} from "@/lib/languageSegmenter";
 import { wavToMp3 } from "@/lib/mp3Encoder";
 import { buildFullText } from "@/features/viewer/viewerUtils";
 import type { PlaybackState, VoicevoxApiError } from "@/shared/types";
@@ -63,6 +77,22 @@ function toApiError(e: unknown): VoicevoxApiError {
   return { kind: "synthesis_failed", statusCode: 0, detail: String(e) };
 }
 
+/** Piper の音声モデル名（piper_manager.rs が導入する固定モデル）。キャッシュキーの voice 成分 */
+const PIPER_VOICE = "en_US-ryan-high";
+
+/**
+ * キャッシュエントリから文 i の再生可能 blob を取り出す。
+ * v2 はキー照合（位置非依存）で探すため、編集直後の stale エントリの音声を誤って再生しない。
+ * 旧形式（位置ベース）は従来通りインデックスで参照する（読み取り互換）。
+ */
+function cachedBlobForKey(entry: AnyCacheEntry | null, i: number, key: string): Blob | null {
+  if (!entry) return null;
+  if (isV2Entry(entry)) {
+    return entry.sentences.find((s) => s.key === key && s.blob !== null)?.blob ?? null;
+  }
+  return i < entry.blobs.length ? entry.blobs[i] : null;
+}
+
 // ─── 公開インターフェース ──────────────────────────────────────────────────
 
 export interface UsePlaybackResult {
@@ -94,6 +124,8 @@ export interface UsePlaybackResult {
   setVolume: (volume: number) => void;
   /** 指定記事を再生なしでバックグラウンド合成する */
   preSynthesize: (articleId: number) => void;
+  /** 指定記事の進行中合成を外部からキャンセルする（編集保存時の競合防止用） */
+  cancelArticleSynth: (articleId: number) => void;
   /** 指定順（省略時: キュー先頭→未合成記事）でバッチ合成を開始する */
   startBatchSynth: (orderedIds?: number[]) => Promise<void>;
   /** バッチ合成を中断する */
@@ -109,11 +141,14 @@ export function usePlayback({
   speakerId,
   initialSpeedScale = 1.0,
   mp3Bitrate = 128,
+  piperInstalled = null,
 }: {
   port: number;
   speakerId: number;
   initialSpeedScale?: number;
   mp3Bitrate?: number;
+  /** Piper 可用性（App が所有する単一判定点）。null = チェック未解決（自前で解決する） */
+  piperInstalled?: boolean | null;
 }): UsePlaybackResult {
   const [state, dispatch] = useReducer(reducer, { phase: "idle" });
   const [speedScale, setSpeedScaleState] = useState(() => {
@@ -149,7 +184,13 @@ export function usePlayback({
   const isRunningRef = useRef(false);
   const clientRef = useRef(new VoicevoxClient(port));
   const piperClientRef = useRef(new PiperClient());
-  const articleLanguageRef = useRef<"ja" | "en">("ja");
+  const articleLanguageRef = useRef<ArticleLanguage>("ja");
+
+  // Piper 可用性: App から供給される単一判定点（null = 未解決）
+  const piperInstalledRef = useRef<boolean | null>(piperInstalled);
+  piperInstalledRef.current = piperInstalled;
+  // prop 未結線時に checkPiperInstalled() で自己解決した結果のセッション内キャッシュ
+  const selfCheckedPiperRef = useRef<boolean | null>(null);
 
   const segmentIndexRef = useRef<number | null>(null);
   const segmentCountRef = useRef(0);
@@ -208,12 +249,14 @@ export function usePlayback({
     function handleCacheUpdate() {
       const articleId = playingArticleIdRef.current;
       if (!articleId) return;
-      getAudio(articleId)
+      getAudioEntry(articleId)
         .then((cached) => {
-          if (cached && cached.totalDurationSeconds > 0) {
+          if (!cached) return;
+          const meta = deriveMeta(cached);
+          if (meta.totalDurationSeconds > 0) {
             setTotalDurationInfo({
-              seconds: cached.totalDurationSeconds,
-              isComplete: cached.isComplete ?? false,
+              seconds: meta.totalDurationSeconds,
+              isComplete: meta.isComplete ?? false,
             });
           }
         })
@@ -264,44 +307,96 @@ export function usePlayback({
     });
   }
 
+  /** 文の言語と Piper 可用性から合成条件（キャッシュキーのエンジン成分）を決める */
+  function specFor(lang: SentenceLang, piperOk: boolean): SynthesisSpec {
+    return lang === "en" && piperOk
+      ? { engine: "piper", voice: PIPER_VOICE, bitrate: mp3BitrateRef.current }
+      : { engine: "vv", voice: String(speakerIdRef.current), bitrate: mp3BitrateRef.current };
+  }
+
   /**
-   * バックグラウンドで記事の未合成部分を順次合成しキャッシュへ保存する。
+   * フルテキストをセグメント化し、Piper 可用性を解決して目標キー列を計算する。
+   * 英語文を含み可用性が未解決（null）の場合は checkPiperInstalled() の解決を待つ
+   * （起動直後のレジューム再生で誤ったエンジンキーの合成を防ぐ）。
+   */
+  async function planSynthesis(fullText: string, language: ArticleLanguage): Promise<{
+    segments: SentenceSegment[];
+    piperOk: boolean;
+    targetKeys: string[];
+  }> {
+    const segments = segmentText(fullText, language);
+    let piperOk = false;
+    if (segments.some((s) => s.lang === "en")) {
+      if (piperInstalledRef.current !== null) {
+        piperOk = piperInstalledRef.current;
+      } else if (selfCheckedPiperRef.current !== null) {
+        piperOk = selfCheckedPiperRef.current;
+      } else {
+        try {
+          selfCheckedPiperRef.current = await checkPiperInstalled();
+        } catch {
+          selfCheckedPiperRef.current = false;
+        }
+        piperOk = selfCheckedPiperRef.current;
+      }
+    }
+    const targetKeys = segments.map((s) => sentenceCacheKey(s.text, specFor(s.lang, piperOk)));
+    return { segments, piperOk, targetKeys };
+  }
+
+  /**
+   * バックグラウンドで記事の未充足文を順次合成しキャッシュ (v2) へ保存する。
+   * 合成開始前にキー照合による再利用を一括実行し、未充足の文のみ昇順に合成する。
    * 再生の一時停止中も中断せず全文合成を目指す。
    * 別の記事が対象の場合は既存合成をキャンセルして切り替える。
    */
   const launchBackgroundSynth = useCallback((
     articleId: number,
-    sentences: string[],
-    fromIdx: number,
-    existingEntry: CacheEntry | null,
-    language: "ja" | "en" = "ja",
+    segments: SentenceSegment[],
+    targetKeys: string[],
+    piperOk: boolean,
+    previous: AnyCacheEntry | null,
   ) => {
     if (bgSynthRef.current) {
       if (bgSynthRef.current.articleId === articleId && !bgSynthRef.current.cancelled) return;
       bgSynthRef.current.cancelled = true;
       setSynthProgress(null);
     }
-    if (fromIdx >= sentences.length) return;
+
+    const total = segments.length;
+    // キー照合で再利用可能な文を移送する（位置非依存）。不一致は blob: null = 再合成対象
+    const sentences: SentenceAudio[] = reuseSentences(targetKeys, previous);
+    let done = sentences.filter((s) => s.blob !== null).length;
+    if (total === 0 || done >= total) return;
 
     const ctrl = { articleId, cancelled: false };
     bgSynthRef.current = ctrl;
-
-    const accBlobs: Blob[] = existingEntry ? [...existingEntry.blobs] : [];
-    let totalDuration = existingEntry?.totalDurationSeconds ?? 0;
-    let totalSize = existingEntry?.totalSizeBytes ?? 0;
-    const cachedAt = existingEntry?.cachedAt ?? new Date().toISOString();
+    const cachedAt = new Date().toISOString();
 
     (async () => {
-      for (let i = fromIdx; i < sentences.length; i++) {
-        if (ctrl.cancelled || bgSynthRef.current !== ctrl) break;
-
-        let blob: Blob;
+      // 既存エントリがある場合は再利用結果を先に確定 put する
+      // （stale な旧本文・旧形式のエントリをこの時点で v2 に全置換する）
+      if (previous !== null) {
         try {
-          if (language === "en") {
-            blob = await piperClientRef.current.synthesize(sentences[i]);
+          await putAudioV2({ articleId, version: 2, sentences: [...sentences], cachedAt });
+          window.dispatchEvent(new CustomEvent(CACHE_UPDATED_EVENT));
+        } catch { /* ignore */ }
+        if (ctrl.cancelled || bgSynthRef.current !== ctrl) return;
+        setSynthProgress({ articleId, done, total });
+      }
+
+      for (let i = 0; i < total; i++) {
+        if (ctrl.cancelled || bgSynthRef.current !== ctrl) break;
+        if (sentences[i].blob !== null) continue; // 再利用済みの文はスキップ
+
+        const seg = segments[i];
+        let wav: Blob;
+        try {
+          if (seg.lang === "en" && piperOk) {
+            wav = await piperClientRef.current.synthesize(seg.text);
           } else {
-            blob = await clientRef.current.synthesize({
-              text: sentences[i],
+            wav = await clientRef.current.synthesize({
+              text: seg.text,
               speakerId: speakerIdRef.current,
               speedScale: 1.0,
             });
@@ -316,24 +411,20 @@ export function usePlayback({
 
         if (ctrl.cancelled || bgSynthRef.current !== ctrl) break;
 
-        const dur = await computeWavDuration(blob);
-        const mp3Blob = await wavToMp3(blob, mp3BitrateRef.current);
-        accBlobs.push(mp3Blob);
-        totalDuration += dur;
-        totalSize += mp3Blob.size;
+        // 合成直後・MP3 化前にラウドネス正規化を適用する
+        // （キャッシュには正規化済み音声のみが入り、音量スライダーとは直交する）
+        const normalized = await normalizeWavLoudness(wav);
+        const dur = await computeWavDuration(normalized);
+        const mp3Blob = await wavToMp3(normalized, mp3BitrateRef.current);
+        sentences[i] = { key: targetKeys[i], blob: mp3Blob, durationSeconds: dur };
+        done += 1;
+
+        if (ctrl.cancelled || bgSynthRef.current !== ctrl) break;
 
         try {
-          await putAudio({
-            articleId,
-            blobs: [...accBlobs],
-            totalDurationSeconds: totalDuration,
-            totalSizeBytes: totalSize,
-            cachedAt,
-            isComplete: accBlobs.length >= sentences.length,
-            sentenceCount: accBlobs.length,
-          });
+          await putAudioV2({ articleId, version: 2, sentences: [...sentences], cachedAt });
           window.dispatchEvent(new CustomEvent(CACHE_UPDATED_EVENT));
-          setSynthProgress({ articleId, done: i + 1, total: sentences.length });
+          setSynthProgress({ articleId, done, total });
         } catch { /* ignore */ }
       }
 
@@ -344,6 +435,37 @@ export function usePlayback({
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /** 指定記事の進行中合成を外部からキャンセルする（編集保存時の競合防止用） */
+  const cancelArticleSynth = useCallback((articleId: number) => {
+    if (bgSynthRef.current?.articleId === articleId) {
+      bgSynthRef.current.cancelled = true;
+      bgSynthRef.current = null;
+      setSynthProgress(null);
+    }
+  }, []);
+
+  /**
+   * 記事の合成計画を立て、未充足文があれば launchBackgroundSynth を開始する。
+   * 旧形式で合成完了済みの記事は再合成しない（読み取り互換のまま温存する）。
+   */
+  async function startSynthIfNeeded(
+    articleId: number,
+    article: { title: string | null; content: string | null; contentHtml: string | null; language?: ArticleLanguage | null },
+  ): Promise<void> {
+    const fullText = buildFullText(article.title ?? null, article.content ?? null, article.contentHtml ?? null);
+    if (!fullText) return;
+    const lang = article.language ?? "ja";
+    const { segments, piperOk, targetKeys } = await planSynthesis(fullText, lang);
+    if (segments.length === 0) return;
+    const cached = await getAudioEntry(articleId);
+    const legacyComplete =
+      cached !== null && !isV2Entry(cached) && cached.isComplete && cached.blobs.length >= segments.length;
+    if (legacyComplete) return;
+    const reused = reuseSentences(targetKeys, cached);
+    if (reused.every((s) => s.blob !== null)) return;
+    launchBackgroundSynth(articleId, segments, targetKeys, piperOk, cached);
+  }
 
   /** 再生ループ: キューが空になるまで記事を順次再生する */
   const runLoop = useCallback(async (session: number) => {
@@ -378,7 +500,7 @@ export function usePlayback({
           if (session !== sessionRef.current) break;
           const article = articles.find((a) => a.id === queueItem.articleId);
           fullText = buildFullText(article?.title ?? null, article?.content ?? null, article?.contentHtml ?? null);
-          articleLanguageRef.current = (article?.language ?? "ja") as "ja" | "en";
+          articleLanguageRef.current = article?.language ?? "ja";
         } catch {
           if (session === sessionRef.current) dispatch({ type: "IDLE" });
           break;
@@ -391,7 +513,9 @@ export function usePlayback({
           continue;
         }
 
-        const sentences = splitSentences(fullText, articleLanguage);
+        const { segments, piperOk, targetKeys } = await planSynthesis(fullText, articleLanguage);
+        if (session !== sessionRef.current) break;
+        const sentences = segments.map((s) => s.text);
         if (sentences.length === 0) {
           try { await removeFromQueue(queueItem.id); } catch { /* ignore */ }
           continue;
@@ -407,21 +531,33 @@ export function usePlayback({
           keySegmentsRef.current = null;
         }
 
-        const cached = await getAudio(queueItem.articleId);
-        const numCached = cached ? Math.min(cached.blobs.length, sentences.length) : 0;
-        const isFullyCached = !!(cached?.isComplete && numCached >= sentences.length);
+        const cached = await getAudioEntry(queueItem.articleId);
+        if (session !== sessionRef.current) break;
+
+        // v2 はキー照合（位置非依存）、旧形式は位置ベースで充足状況を判定する
+        const reused = reuseSentences(targetKeys, cached);
+        const isLegacy = cached !== null && !isV2Entry(cached);
+        const readyCount = isLegacy
+          ? Math.min(cached.blobs.length, sentences.length)
+          : reused.filter((s) => s.blob !== null).length;
+        const isFullyCached = isLegacy
+          ? !!(cached.isComplete && readyCount >= sentences.length)
+          : readyCount >= sentences.length;
 
         // 合計再生時間をキャッシュから取得（合成完了なら確定値、未完了なら暫定）
-        if (cached && cached.totalDurationSeconds > 0) {
-          setTotalDurationInfo({
-            seconds: cached.totalDurationSeconds,
-            isComplete: cached.isComplete ?? false,
-          });
+        if (cached) {
+          const meta = deriveMeta(cached);
+          if (meta.totalDurationSeconds > 0) {
+            setTotalDurationInfo({
+              seconds: meta.totalDurationSeconds,
+              isComplete: meta.isComplete ?? false,
+            });
+          }
         }
 
-        // 未合成の文があればバックグラウンドで合成を開始する (一時停止中も継続)
+        // 未充足の文があればバックグラウンドで合成を開始する (一時停止中も継続)
         if (!isFullyCached) {
-          launchBackgroundSynth(queueItem.articleId, sentences, numCached, cached, articleLanguage);
+          launchBackgroundSynth(queueItem.articleId, segments, targetKeys, piperOk, cached);
         }
 
         // jumpToSegment から開始位置を取得してクリア
@@ -454,11 +590,14 @@ export function usePlayback({
         segmentCountRef.current = sentences.length;
 
         // 再生開始文がキャッシュ済みなら即 PLAYING、未合成なら SYNTHESIZING で待機
-        if (numCached > playFrom) {
+        const startReady = isLegacy
+          ? readyCount > playFrom
+          : reused[playFrom]?.blob != null;
+        if (startReady) {
           dispatch({ type: "PLAYING", articleId: queueItem.articleId });
         } else {
           dispatch({ type: "SYNTHESIZING", articleId: queueItem.articleId });
-          setSynthProgress({ articleId: queueItem.articleId, done: numCached, total: sentences.length });
+          setSynthProgress({ articleId: queueItem.articleId, done: readyCount, total: sentences.length });
         }
 
         const startTime = Date.now();
@@ -473,7 +612,7 @@ export function usePlayback({
 
         let sessionBroken = false;
         let synthError = false;
-        let playingDispatched = numCached > playFrom;
+        let playingDispatched = startReady;
         let lastCompletedIdx: number | null = null; // 完全に再生し終えた最後の文インデックス
 
         for (let i = playFrom; i < sentences.length; i++) {
@@ -484,12 +623,14 @@ export function usePlayback({
             continue;
           }
 
-          // キャッシュに blob[i] が現れるまで待機 (バックグラウンド合成が保存するのを待つ)
+          // キャッシュに文 i の音声が現れるまで待機 (バックグラウンド合成が保存するのを待つ)。
+          // v2 はキー照合のため歯抜けエントリ（再利用文の間に未合成文）にも対応する
           let blob: Blob | null = null;
           while (session === sessionRef.current) {
-            const entry = await getAudio(queueItem.articleId);
-            if (entry && entry.blobs.length > i) {
-              blob = entry.blobs[i];
+            const entry = await getAudioEntry(queueItem.articleId);
+            const found = cachedBlobForKey(entry, i, targetKeys[i]);
+            if (found) {
+              blob = found;
               break;
             }
             if (synthErrorRef.current?.articleId === queueItem.articleId) {
@@ -723,18 +864,12 @@ export function usePlayback({
   const preSynthesize = useCallback(async (articleId: number) => {
     if (bgSynthRef.current?.articleId === articleId && !bgSynthRef.current.cancelled) return;
     try {
-      const [articles, cached] = await Promise.all([getArticles(), getAudio(articleId)]);
+      const articles = await getArticles();
       const article = articles.find((a) => a.id === articleId);
       if (!article) return;
-      const fullText = buildFullText(article.title ?? null, article.content ?? null, article.contentHtml ?? null);
-      if (!fullText) return;
-      const lang = (article.language ?? "ja") as "ja" | "en";
-      const sentences = splitSentences(fullText, lang);
-      if (sentences.length === 0) return;
-      const numCached = cached ? Math.min(cached.blobs.length, sentences.length) : 0;
-      if (cached?.isComplete && numCached >= sentences.length) return;
-      launchBackgroundSynth(articleId, sentences, numCached, cached, lang);
+      await startSynthIfNeeded(articleId, article);
     } catch { /* ignore */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [launchBackgroundSynth]);
 
   const stopBatchSynth = useCallback(() => {
@@ -782,23 +917,16 @@ export function usePlayback({
       for (const articleId of idsToProcess) {
         if (ctrl.cancelled) break;
 
-        const [arts, cached] = await Promise.all([getArticles(), getAudio(articleId)]);
+        const arts = await getArticles();
         if (ctrl.cancelled) break;
 
         const article = arts.find((a) => a.id === articleId);
         if (!article) continue;
 
-        const fullText = buildFullText(article.title ?? null, article.content ?? null, article.contentHtml ?? null);
-        if (!fullText) continue;
-
-        const lang = (article.language ?? "ja") as "ja" | "en";
-        const sentences = splitSentences(fullText, lang);
-        if (!sentences.length) continue;
-
-        const numCached = cached ? Math.min(cached.blobs.length, sentences.length) : 0;
-        if (cached?.isComplete && numCached >= sentences.length) continue;
-
-        launchBackgroundSynth(articleId, sentences, numCached, cached, lang);
+        try {
+          await startSynthIfNeeded(articleId, article);
+        } catch { continue; }
+        if (ctrl.cancelled) break;
 
         // この記事の合成完了を待つ
         while (!ctrl.cancelled) {
@@ -828,7 +956,7 @@ export function usePlayback({
     summaryMode, setSummaryMode,
     start, pause, resume, skip, restart,
     seekForward, seekBackward, jumpToSegment,
-    setSpeedScale, setVolume, preSynthesize,
+    setSpeedScale, setVolume, preSynthesize, cancelArticleSynth,
     startBatchSynth, stopBatchSynth,
   };
 }

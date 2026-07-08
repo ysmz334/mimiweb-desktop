@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS articles (
   registered_at   TEXT    NOT NULL,
   extracted_at    TEXT,
   is_favorite     INTEGER NOT NULL DEFAULT 0,
-  language        TEXT    NOT NULL DEFAULT 'ja'
+  language        TEXT    NOT NULL DEFAULT 'ja',
+  source_type     TEXT    NOT NULL DEFAULT 'web'
 );
 
 CREATE INDEX IF NOT EXISTS idx_articles_status ON articles(status);

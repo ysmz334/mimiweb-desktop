@@ -33,6 +33,7 @@ pub struct QueueJoinRow {
     pub extracted_at: Option<String>,
     pub is_favorite: bool,
     pub language: String,
+    pub source_type: String,
 }
 
 impl From<QueueJoinRow> for QueueItem {
@@ -54,6 +55,7 @@ impl From<QueueJoinRow> for QueueItem {
                 extracted_at: row.extracted_at,
                 is_favorite: row.is_favorite,
                 language: row.language,
+                source_type: row.source_type,
             },
         }
     }

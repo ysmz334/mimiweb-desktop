@@ -28,6 +28,40 @@ export async function registerArticle(
   }
 }
 
+/** テキスト記事を登録する。title 省略時はバックエンドが本文の先頭行を採用する */
+export async function registerTextArticle(
+  content: string,
+  title?: string
+): Promise<Result<Article, ArticleError>> {
+  try {
+    const value = await invoke<Article>("register_text_article", {
+      title: title ?? null,
+      content,
+    });
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error: error as ArticleError };
+  }
+}
+
+/** テキスト記事のタイトル・本文を更新する（テキスト記事以外は not_text_article で拒否される） */
+export async function updateTextArticle(
+  id: number,
+  content: string,
+  title?: string
+): Promise<Result<Article, ArticleError>> {
+  try {
+    const value = await invoke<Article>("update_text_article", {
+      id,
+      title: title ?? null,
+      content,
+    });
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error: error as ArticleError };
+  }
+}
+
 export async function getArticles(filter?: ArticleFilter): Promise<Article[]> {
   return invoke<Article[]>("get_articles", { filter: filter ?? null });
 }

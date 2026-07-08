@@ -339,6 +339,41 @@ fn is_japanese(c: char) -> bool {
     matches!(c as u32, 0x3040..=0x30FF | 0x4E00..=0x9FFF)
 }
 
+/// mixed 判定: 少数派言語の行がこの行数以上あること
+pub const MIXED_MIN_MINORITY_LINES: usize = 2;
+/// mixed 判定: 少数派言語の行が全行数（空行除く）に占める割合の下限
+pub const MIXED_MIN_MINORITY_RATIO: f64 = 0.10;
+
+/// 記事全体を "ja" / "en" / "mixed" の3値で判定する。
+///
+/// 空行を除く各行を `detect_language` で分類し、少数派言語が
+/// `MIXED_MIN_MINORITY_LINES` 行以上かつ全体の `MIXED_MIN_MINORITY_RATIO` 以上なら
+/// "mixed"、それ以外は多数派の言語を返す（1行だけの引用では mixed 化しない）。
+/// 純日本語・純英語のテキストでは既存 `detect_language` と同一の結果を返す。
+pub fn detect_article_language(text: &str) -> &'static str {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return detect_language(text);
+    }
+
+    let ja_lines = lines.iter().filter(|l| detect_language(l) == "ja").count();
+    let en_lines = lines.len() - ja_lines;
+    let minority = ja_lines.min(en_lines);
+    let minority_ratio = minority as f64 / lines.len() as f64;
+
+    if minority >= MIXED_MIN_MINORITY_LINES && minority_ratio >= MIXED_MIN_MINORITY_RATIO {
+        "mixed"
+    } else if ja_lines >= en_lines {
+        "ja"
+    } else {
+        "en"
+    }
+}
+
 // ─── PCM → WAV 変換 ───────────────────────────────────────────────────────
 
 /// 16bit mono の raw PCM バイト列に RIFF WAV ヘッダー（44 bytes）を付加して返す。
@@ -432,6 +467,130 @@ mod tests {
     fn detect_language_katakana_only() {
         let result = detect_language("コンピュータプログラミング");
         assert_eq!(result, "ja");
+    }
+
+    // ── detect_article_language ──
+
+    /// 純日本語・純英語テキストでは既存 detect_language と同一の結果を返す（互換性保証）
+    #[test]
+    fn detect_article_language_matches_detect_language_for_pure_texts() {
+        let pure_texts = [
+            "これはテストです。日本語の文章です。",
+            "これは一行目です。\n二行目の文章です。\n三行目もあります。",
+            "This is an English sentence for testing.",
+            "First line of English text.\nSecond line here.\nThird line too.",
+            "",
+            "漢字だけの文章",
+            "コンピュータプログラミング",
+        ];
+        for text in pure_texts {
+            assert_eq!(
+                detect_article_language(text),
+                detect_language(text),
+                "純テキストでは detect_language と同一結果であるべき: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn detect_article_language_bilingual_script_is_mixed() {
+        // 対訳スクリプト形式（日本語行と英語行が交互）
+        let text = "私は毎朝コーヒーを飲みます。\n\
+                    I drink coffee every morning.\n\
+                    今日は天気がいいですね。\n\
+                    The weather is nice today.\n\
+                    駅までの道を教えてください。\n\
+                    Could you tell me the way to the station?";
+        assert_eq!(detect_article_language(text), "mixed", "対訳スクリプトは 'mixed' になるべき");
+    }
+
+    #[test]
+    fn detect_article_language_ja_tech_article_with_code_stays_ja() {
+        // コードブロック・英語引用を含む日本語技術記事は 'ja' のまま
+        // （英語行 4 行 / 全 42 行 ≈ 9.5% < 10%）
+        let mut lines: Vec<String> = Vec::new();
+        for i in 0..38 {
+            lines.push(format!("これは日本語技術記事の本文の第{i}段落です。Rust の所有権について説明します。"));
+        }
+        lines.push("fn main() {".to_string());
+        lines.push("    let owned = String::from(\"hello\");".to_string());
+        lines.push("}".to_string());
+        lines.push("As the Rust book says, ownership is a set of rules.".to_string());
+        let text = lines.join("\n");
+        assert_eq!(
+            detect_article_language(&text),
+            "ja",
+            "コードブロック・英語引用を含む日本語技術記事は 'ja' のままであるべき"
+        );
+    }
+
+    #[test]
+    fn detect_article_language_single_english_quote_is_not_mixed() {
+        // 英語行が 1 行だけ（2 行未満）→ mixed にしない
+        let mut lines: Vec<String> = (0..5)
+            .map(|i| format!("日本語の本文行その{i}です。"))
+            .collect();
+        lines.push("To be, or not to be, that is the question.".to_string());
+        let text = lines.join("\n");
+        assert_eq!(detect_article_language(&text), "ja", "1 行だけの英語引用では mixed にならないべき");
+    }
+
+    #[test]
+    fn detect_article_language_minority_at_exactly_10_percent_is_mixed() {
+        // 少数派 2 行 / 全 20 行 = ちょうど 10% → mixed
+        let mut lines: Vec<String> = (0..18)
+            .map(|i| format!("日本語の本文行その{i}です。"))
+            .collect();
+        lines.push("This is the first English line.".to_string());
+        lines.push("This is the second English line.".to_string());
+        let text = lines.join("\n");
+        assert_eq!(detect_article_language(&text), "mixed", "少数派がちょうど 10% なら mixed になるべき");
+    }
+
+    #[test]
+    fn detect_article_language_minority_below_10_percent_is_majority() {
+        // 少数派 2 行 / 全 30 行 ≈ 6.7% < 10% → 多数派 'ja'
+        let mut lines: Vec<String> = (0..28)
+            .map(|i| format!("日本語の本文行その{i}です。"))
+            .collect();
+        lines.push("This is the first English line.".to_string());
+        lines.push("This is the second English line.".to_string());
+        let text = lines.join("\n");
+        assert_eq!(detect_article_language(&text), "ja", "少数派が 10% 未満なら多数派の言語になるべき");
+    }
+
+    #[test]
+    fn detect_article_language_english_article_with_ja_minority_is_mixed() {
+        // 英語多数派 + 日本語少数派（2 行以上・10% 以上）でも対称に mixed
+        let mut lines: Vec<String> = (0..8)
+            .map(|i| format!("This is English body line number {i}."))
+            .collect();
+        lines.push("これは日本語の行です。".to_string());
+        lines.push("こちらも日本語の行です。".to_string());
+        let text = lines.join("\n");
+        assert_eq!(detect_article_language(&text), "mixed", "英語多数派でも日本語少数派がしきい値超えなら mixed");
+    }
+
+    #[test]
+    fn detect_article_language_english_article_with_single_ja_line_is_en() {
+        let mut lines: Vec<String> = (0..10)
+            .map(|i| format!("This is English body line number {i}."))
+            .collect();
+        lines.push("これは日本語の行です。".to_string());
+        let text = lines.join("\n");
+        assert_eq!(detect_article_language(&text), "en", "日本語行が 1 行だけなら 'en' のままであるべき");
+    }
+
+    #[test]
+    fn detect_article_language_blank_lines_are_ignored() {
+        // 空行・空白のみの行は行数に数えない（20 行中 2 行 = 10% の判定が空行で薄まらない）
+        let mut lines: Vec<String> = (0..18)
+            .map(|i| format!("日本語の本文行その{i}です。\n"))
+            .collect();
+        lines.push("This is the first English line.\n\n\n".to_string());
+        lines.push("This is the second English line.\n   \n".to_string());
+        let text = lines.join("\n");
+        assert_eq!(detect_article_language(&text), "mixed", "空行を除いた行数でしきい値判定すべき");
     }
 
     // ── pcm_to_wav ──

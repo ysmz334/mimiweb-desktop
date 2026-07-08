@@ -55,6 +55,7 @@ pub struct HistoryJoinRow {
     pub extracted_at: Option<String>,
     pub is_favorite: Option<bool>,
     pub language: Option<String>,
+    pub source_type: Option<String>,
 }
 
 impl From<HistoryJoinRow> for PlaybackHistory {
@@ -72,6 +73,7 @@ impl From<HistoryJoinRow> for PlaybackHistory {
                 extracted_at: row.extracted_at.clone(),
                 is_favorite: row.is_favorite.unwrap_or(false),
                 language: row.language.clone().unwrap_or_else(|| "ja".to_string()),
+                source_type: row.source_type.clone().unwrap_or_else(|| "web".to_string()),
             }),
             _ => None,
         };
